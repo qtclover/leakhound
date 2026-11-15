@@ -21,3 +21,13 @@ jobs:
       - run: cargo build --release --locked
       - name: Scan this repository with itself
         run: ./target/release/leakhound . --history
+
+  action:
+    # Runs action.yml the way another repository would, against the latest
+    # published release.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./
