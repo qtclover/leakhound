@@ -1,4 +1,5 @@
 pub mod entropy;
+pub mod git;
 pub mod rules;
 pub mod scan;
 pub mod walk;
