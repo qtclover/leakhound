@@ -34,9 +34,9 @@ clones the repository can still read it.
 
 ## Install
 
-Download a static Linux binary from the
+Download a binary for Linux, macOS or Windows from the
 [releases page](https://github.com/qtclover/leakhound/releases), or build from
-source with a recent stable Rust toolchain:
+source with Rust 1.88 or newer:
 
 ```sh
 cargo install --git https://github.com/qtclover/leakhound
@@ -52,6 +52,7 @@ leakhound path/to/repo         # scan somewhere else
 leakhound --history            # also scan every commit on every branch
 leakhound --staged             # scan only what is staged for the next commit
 leakhound --verify             # ask each service whether the secret still works
+leakhound --baseline old.json  # hide findings already listed in a saved report
 leakhound --format json        # machine-readable output (also: sarif)
 leakhound -o report.json -f json  # write the report to a file
 leakhound -x 'tests/fixtures/' # skip paths matching a glob (repeatable)
@@ -90,18 +91,19 @@ commit.
 - uses: actions/checkout@v4
   with:
     fetch-depth: 0 # full history
-- uses: qtclover/leakhound@v0.2.0
+- uses: qtclover/leakhound@v0.3.0
 ```
 
-The action downloads the release binary, verifies its checksum and scans the
-checkout including history. The job fails if anything is found. It runs on
-Linux x86_64 runners.
+The action downloads the release binary for the runner, verifies its checksum
+and scans the checkout including history. The job fails if anything is found.
+It works on Linux, macOS and Windows runners, and uses the latest release
+unless you set `version`.
 
 To show findings in the repository's Security tab instead, write SARIF and
 upload it:
 
 ```yaml
-- uses: qtclover/leakhound@v0.2.0
+- uses: qtclover/leakhound@v0.3.0
   continue-on-error: true
   with:
     args: --history --format sarif --output leakhound.sarif
@@ -113,6 +115,22 @@ upload it:
 `--format sarif` writes SARIF 2.1.0. Each result carries a fingerprint that
 stays the same when a secret moves to a different line, so GitHub tracks it as
 one alert. The upload step needs the `security-events: write` permission.
+
+## Adopt it on a repository with old findings
+
+A repository that already has secrets in its history would fail every scan.
+Save today's findings as a baseline, then report only what is new:
+
+```sh
+leakhound --history --format json --output leakhound-baseline.json
+leakhound --history --baseline leakhound-baseline.json
+```
+
+The baseline is an ordinary JSON report with secrets redacted, so it is safe to
+commit. Findings are matched by fingerprint (rule, file and secret), so a known
+secret that moves to another line stays known. The old secrets are still
+leaked, of course: the baseline buys time to rotate them, it does not make them
+safe.
 
 ## Check whether a secret is still live
 
@@ -187,6 +205,15 @@ counts if it:
 - is not an obvious placeholder (`your_api_key`, `${VAR}`, `changeme`, ...),
 - was not already claimed by a specific rule.
 
+**Split strings.** A secret broken across lines as adjacent string literals,
+optionally joined with `+`, `.` or a trailing backslash, is glued back together
+and matched as a whole:
+
+```python
+TOKEN = ("ghp_aB3dE6gH9j..."
+         "...W4yZ7bC0eF3hJ6")  # found, reported at the first line
+```
+
 ## How it works
 
 - **One pass per file.** All rules are compiled into a single `RegexSet`, so a
@@ -208,25 +235,52 @@ counts if it:
 
 ## Performance
 
-Measured on a 24-thread desktop with a warm file cache:
+Scanning files on a 24-thread desktop with a warm file cache:
 
-| Input                                                  | Time   |
-| ------------------------------------------------------ | ------ |
-| 461 MB of source in 41,556 files, 24 threads           | 0.17 s |
-| The same, single thread (`-j1`)                        | 1.51 s |
-| ripgrep: 218 files plus the history of 2,344 commits   | 0.41 s |
+| Input                                        | Time   |
+| -------------------------------------------- | ------ |
+| 461 MB of source in 41,556 files, 24 threads | 0.14 s |
+| The same, single thread (`-j1`)              | 1.43 s |
+
+### Compared with gitleaks and trufflehog
+
+Full history of three public repositories, best of three runs, with the number
+of findings in brackets. Verification was off for every tool. Versions:
+leakhound 0.3.0, gitleaks 8.30.1, trufflehog 3.99.9, all run in the same
+container on the same machine.
+
+| Repository         | Commits | leakhound    | gitleaks     | trufflehog   |
+| ------------------ | ------- | ------------ | ------------ | ------------ |
+| BurntSushi/ripgrep | 2,311   | 0.49 s (0)   | 1.52 s (0)   | 2.30 s (0)   |
+| pallets/flask      | 5,607   | 0.66 s (6)   | 0.77 s (12)  | 2.67 s (0)   |
+| django/django      | 53,139  | 25.43 s (88) | 31.83 s (27) | 77.91 s (72) |
+
+How to read this honestly:
+
+- **Speed.** leakhound is 1.2 to 3 times faster than gitleaks and 3 to 5 times
+  faster than trufflehog here. On Django nearly all of leakhound's time is git
+  itself: `git log -p` alone takes about 20 seconds on that repository, so
+  there is little left to win without replacing git.
+- **Findings are not a score.** The tools have different rules, so the counts
+  are not comparable and more is not better. Every leakhound finding in Flask
+  and Django comes from the generic "secret-looking assignment" rule, which in
+  these projects mostly means passwords in tests and documentation. None of the
+  three tools reported a recognisable live credential format.
+
+Reproduce it with [`bench/run.sh`](bench/run.sh), which needs all three tools
+on your `PATH`.
 
 ## Limitations
 
-- Every rule matches within a single line, so a secret split across lines is
-  missed.
+- A secret assembled at runtime from variables, format strings or separate
+  list items is missed. Only adjacent string literals are joined.
 - Without `--verify`, findings are pattern matches only, so expect the
   occasional false positive: mostly test keys and constants that happen to sit
   next to the word "secret".
 - Merge commits are not diffed, so a secret introduced only by a merge
   resolution is not seen in history.
-- Release binaries and the GitHub Action cover Linux x86_64 only. Other
-  platforms build from source.
+- There is no Linux arm64 binary yet; build from source there. The macOS
+  x86_64 binary is cross-compiled and not exercised by the release smoke test.
 
 ## Development
 
@@ -240,7 +294,8 @@ Test credentials are assembled at runtime so the repository never contains a
 string that another scanner would flag. CI enforces this by scanning the
 repository and its history with the binary it just built.
 
-Pushing a `v*` tag builds the static binary and publishes a release.
+Pushing a `v*` tag builds binaries for every platform, publishes a release and
+runs the Action against it on Linux, macOS and Windows.
 
 ## License
 
