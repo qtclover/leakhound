@@ -1,6 +1,7 @@
 name: Release
 
-# Pushing a tag like v0.2.0 builds a static Linux binary and publishes it.
+# Pushing a tag like v0.3.0 builds binaries for Linux, macOS and Windows,
+# publishes them, then runs the Action against the new release on each OS.
 on:
   push:
     tags: ["v*"]
@@ -9,33 +10,91 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            name: x86_64-linux
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: aarch64-macos
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: x86_64-macos
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: x86_64-windows
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
+          targets: ${{ matrix.target }}
       - name: Install the musl C toolchain
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Check the tag matches Cargo.toml
         run: |
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
           test "v$version" = "$GITHUB_REF_NAME"
       - run: cargo test --locked
-      - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
         run: |
-          name="leakhound-${GITHUB_REF_NAME}-x86_64-linux"
+          name="leakhound-${{ matrix.name }}"
           mkdir "$name"
-          cp target/x86_64-unknown-linux-musl/release/leakhound README.md LICENSE "$name/"
-          tar -czf "$name.tar.gz" "$name"
-          sha256sum "$name.tar.gz" > SHA256SUMS
+          cp README.md LICENSE "$name/"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/leakhound.exe" "$name/"
+            7z a "$name.zip" "$name"
+          else
+            cp "target/${{ matrix.target }}/release/leakhound" "$name/"
+            tar -czf "$name.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            leakhound-*.tar.gz
+            leakhound-*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Checksums
+        run: sha256sum leakhound-* > SHA256SUMS
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
             --title "leakhound $GITHUB_REF_NAME" \
             --generate-notes \
-            leakhound-*.tar.gz SHA256SUMS
+            leakhound-* SHA256SUMS
+
+  smoke:
+    # The release is only useful if the Action can install it everywhere.
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./
+        with:
+          version: ${{ github.ref_name }}

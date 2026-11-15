@@ -249,6 +249,7 @@ fn sarif_output_is_valid_when_clean() {
 
 /// Runs git with the directory holding the leakhound binary first on PATH, the
 /// way an installed copy would be found by the hook.
+#[cfg(unix)]
 fn git_with_leakhound_on_path(dir: &Path, args: &[&str]) -> Output {
     let bin_dir = Path::new(env!("CARGO_BIN_EXE_leakhound")).parent().unwrap();
     let path = format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap());

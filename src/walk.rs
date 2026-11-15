@@ -80,7 +80,11 @@ pub fn scan_tree(
             } else {
                 rel
             };
-            let path = shown.to_string_lossy();
+            // Forward slashes everywhere, so paths match what git reports
+            // and reports look the same on every platform.
+            let path = shown
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/");
             let found = hits
                 .into_iter()
                 .map(|h| Finding::from_hit(h, &path, Source::Worktree));
