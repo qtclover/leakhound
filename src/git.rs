@@ -1,4 +1,5 @@
-//! Scan every line ever added in a repository's history.
+//! Scan every line ever added in a repository's history, or just the lines
+//! staged for the next commit.
 //!
 //! Rather than linking a git library, this streams `git log -p -U0` and parses
 //! the diff: with zero context lines each hunk is exactly one block of added
@@ -12,14 +13,14 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
 
 /// Hunks are scanned in parallel once this much added text has piled up.
 const BATCH_BYTES: usize = 16 << 20;
 
 struct Hunk {
-    commit: Arc<Commit>,
+    commit: Option<Arc<Commit>>,
     path: Arc<str>,
     start_line: usize,
     text: String,
@@ -41,14 +42,14 @@ fn hunk_start(header: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
-fn scan_batch(batch: &mut Vec<Hunk>, scanner: &Scanner, out: &mut Vec<Finding>) {
+fn scan_batch(batch: &mut Vec<Hunk>, scanner: &Scanner, source: Source, out: &mut Vec<Finding>) {
     let found: Vec<Finding> = batch
         .par_iter()
         .flat_map_iter(|hunk| {
             scanner.scan(&hunk.text).into_iter().map(|hit| {
-                let mut f = Finding::from_hit(hit, &hunk.path, Source::History);
+                let mut f = Finding::from_hit(hit, &hunk.path, source);
                 f.line += hunk.start_line - 1;
-                f.commit = Some(hunk.commit.clone());
+                f.commit = hunk.commit.clone();
                 f
             })
         })
@@ -57,26 +58,25 @@ fn scan_batch(batch: &mut Vec<Hunk>, scanner: &Scanner, out: &mut Vec<Finding>) 
     batch.clear();
 }
 
-pub fn scan_history(
+/// Run a git command that prints a `-U0` diff and scan every added hunk.
+fn scan_diff(
     dir: &Path,
+    args: &[&str],
     scanner: &Scanner,
     filter: &PathFilter,
-) -> Result<(Vec<Finding>, HistoryStats)> {
+    source: Source,
+) -> Result<(Vec<Finding>, HistoryStats, Output)> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(dir)
+        .args(["-c", "core.quotepath=off"])
+        .args(args)
         .args([
-            "-c",
-            "core.quotepath=off",
-            "log",
-            "--all",
-            "-p",
             "-U0",
             "--relative",
             "--no-color",
             "--no-ext-diff",
             "--no-textconv",
-            "--format=%x01%H%x01%an%x01%as",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -113,7 +113,7 @@ pub fn scan_history(
             stats.bytes += hunk.text.len() as u64;
             batch.push(hunk);
             if batch_bytes >= BATCH_BYTES {
-                scan_batch(&mut batch, scanner, &mut findings);
+                scan_batch(&mut batch, scanner, source, &mut findings);
                 batch_bytes = 0;
             }
         }
@@ -136,9 +136,7 @@ pub fn scan_history(
             }
         } else if starts_hunk {
             in_header = false;
-            if let Some(commit) = &commit
-                && !filter.is_excluded(&path)
-            {
+            if !filter.is_excluded(&path) {
                 let header = String::from_utf8_lossy(&line);
                 current = Some(Hunk {
                     commit: commit.clone(),
@@ -159,9 +157,19 @@ pub fn scan_history(
         stats.bytes += hunk.text.len() as u64;
         batch.push(hunk);
     }
-    scan_batch(&mut batch, scanner, &mut findings);
+    scan_batch(&mut batch, scanner, source, &mut findings);
 
     let output = child.wait_with_output()?;
+    Ok((findings, stats, output))
+}
+
+pub fn scan_history(
+    dir: &Path,
+    scanner: &Scanner,
+    filter: &PathFilter,
+) -> Result<(Vec<Finding>, HistoryStats)> {
+    let args = ["log", "--all", "-p", "--format=%x01%H%x01%an%x01%as"];
+    let (findings, stats, output) = scan_diff(dir, &args, scanner, filter, Source::History)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // A repository with no commits yet has nothing to scan; that is fine.
@@ -177,6 +185,24 @@ pub fn scan_history(
         oldest.insert((f.rule.clone(), f.path.clone(), f.secret.clone()), f);
     }
     Ok((oldest.into_values().collect(), stats))
+}
+
+/// Scan only what `git add` has staged, which is what the next commit will
+/// contain. This is the pre-commit hook's entry point.
+pub fn scan_staged(
+    dir: &Path,
+    scanner: &Scanner,
+    filter: &PathFilter,
+) -> Result<(Vec<Finding>, HistoryStats)> {
+    let args = ["diff", "--cached"];
+    let (findings, stats, output) = scan_diff(dir, &args, scanner, filter, Source::Staged)?;
+    if !output.status.success() {
+        bail!(
+            "git diff failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok((findings, stats))
 }
 
 #[cfg(test)]

@@ -1,10 +1,10 @@
 use anyhow::{Result, bail};
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use leakhound::config::Config;
 use leakhound::filter::PathFilter;
 use leakhound::scan::Scanner;
 use leakhound::walk::{WalkOptions, scan_tree};
-use leakhound::{git, redact, report};
+use leakhound::{git, hook, redact, report};
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -23,8 +23,31 @@ enum Format {
 ///
 /// Exits with 0 when nothing is found, 1 when secrets are found, and 2 on error.
 #[derive(Parser)]
-#[command(name = "leakhound", version)]
+#[command(name = "leakhound", version, args_conflicts_with_subcommands = true)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    #[command(flatten)]
+    scan: ScanArgs,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Install a git pre-commit hook that blocks commits containing secrets
+    InstallHook {
+        /// Repository to install the hook into
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Replace an existing pre-commit hook
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Args)]
+struct ScanArgs {
     /// File or directory to scan
     #[arg(default_value = ".")]
     path: PathBuf,
@@ -32,6 +55,10 @@ struct Cli {
     /// Also scan every commit in the git history
     #[arg(long)]
     history: bool,
+
+    /// Scan only the changes staged for the next commit
+    #[arg(long, conflicts_with_all = ["history", "no_ignore"])]
+    staged: bool,
 
     /// Output format
     #[arg(long, short, value_enum, default_value_t = Format::Text)]
@@ -67,7 +94,12 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let cli = Cli::parse();
+    let result = match cli.command {
+        Some(Command::InstallHook { path, force }) => install_hook(&path, force),
+        None => run(cli.scan),
+    };
+    match result {
         Ok(true) => ExitCode::from(1),
         Ok(false) => ExitCode::SUCCESS,
         // Output was piped into something like `head` that stopped reading.
@@ -93,8 +125,14 @@ fn is_broken_pipe(err: &anyhow::Error) -> bool {
     })
 }
 
+fn install_hook(path: &std::path::Path, force: bool) -> Result<bool> {
+    let hook = hook::install(path, force)?;
+    println!("installed pre-commit hook at {}", hook.display());
+    Ok(false)
+}
+
 /// Returns whether any secrets were found.
-fn run(cli: Cli) -> Result<bool> {
+fn run(cli: ScanArgs) -> Result<bool> {
     if !cli.path.exists() {
         bail!("{} does not exist", cli.path.display());
     }
@@ -112,8 +150,8 @@ fn run(cli: Cli) -> Result<bool> {
         }
         return Ok(false);
     }
-    if cli.history && !cli.path.is_dir() {
-        bail!("--history needs a directory inside a git repository");
+    if (cli.history || cli.staged) && !cli.path.is_dir() {
+        bail!("--history and --staged need a directory inside a git repository");
     }
 
     let threads = cli
@@ -128,17 +166,27 @@ fn run(cli: Cli) -> Result<bool> {
     let mut excluded = cli.exclude;
     excluded.extend(config.allow_paths);
     let filter = PathFilter::new(&cli.path, excluded)?;
-    let opts = WalkOptions {
-        no_ignore: cli.no_ignore,
-        max_size: cli.max_size.saturating_mul(1 << 20),
-        threads,
+    let (mut findings, mut summary) = if cli.staged {
+        let (findings, stats) = git::scan_staged(&cli.path, &scanner, &filter)?;
+        let summary = format!(
+            "scanned staged changes ({:.1} MB of added lines)",
+            stats.bytes as f64 / 1e6
+        );
+        (findings, summary)
+    } else {
+        let opts = WalkOptions {
+            no_ignore: cli.no_ignore,
+            max_size: cli.max_size.saturating_mul(1 << 20),
+            threads,
+        };
+        let (findings, stats) = scan_tree(&cli.path, &scanner, &filter, &opts)?;
+        let summary = format!(
+            "scanned {} files ({:.1} MB)",
+            stats.files,
+            stats.bytes as f64 / 1e6
+        );
+        (findings, summary)
     };
-    let (mut findings, walk_stats) = scan_tree(&cli.path, &scanner, &filter, &opts)?;
-    let mut summary = format!(
-        "scanned {} files ({:.1} MB)",
-        walk_stats.files,
-        walk_stats.bytes as f64 / 1e6
-    );
 
     if cli.history {
         let (history, stats) = git::scan_history(&cli.path, &scanner, &filter)?;

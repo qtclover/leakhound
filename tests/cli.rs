@@ -246,3 +246,119 @@ fn sarif_output_is_valid_when_clean() {
         0
     );
 }
+
+/// Runs git with the directory holding the leakhound binary first on PATH, the
+/// way an installed copy would be found by the hook.
+fn git_with_leakhound_on_path(dir: &Path, args: &[&str]) -> Output {
+    let bin_dir = Path::new(env!("CARGO_BIN_EXE_leakhound")).parent().unwrap();
+    let path = format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap());
+    Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+        ])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .env("PATH", path)
+        .output()
+        .expect("git runs")
+}
+
+#[test]
+fn staged_scans_only_what_is_about_to_be_committed() {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q"]);
+    fs::write(dir.path().join("staged.txt"), format!("x\n{}\n", token())).unwrap();
+    fs::write(dir.path().join("unstaged.txt"), token()).unwrap();
+    git(dir.path(), &["add", "staged.txt"]);
+
+    let out = leakhound(dir.path(), &["--staged", "--format", "json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let findings = json(&out);
+    assert_eq!(findings.as_array().unwrap().len(), 1);
+    assert_eq!(findings[0]["path"], "staged.txt");
+    assert_eq!(findings[0]["line"], 2);
+    assert_eq!(findings[0]["source"], "staged");
+
+    git(dir.path(), &["reset", "-q", "staged.txt"]);
+    assert_eq!(leakhound(dir.path(), &["--staged"]).status.code(), Some(0));
+}
+
+#[cfg(unix)]
+#[test]
+fn installed_hook_blocks_a_commit_with_a_secret() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q"]);
+    let out = Command::new(env!("CARGO_BIN_EXE_leakhound"))
+        .arg("install-hook")
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let hook = dir.path().join(".git/hooks/pre-commit");
+    assert!(fs::metadata(&hook).unwrap().permissions().mode() & 0o111 != 0);
+
+    fs::write(dir.path().join("config.py"), format!("T = '{}'\n", token())).unwrap();
+    git(dir.path(), &["add", "."]);
+    let blocked = git_with_leakhound_on_path(dir.path(), &["commit", "-qm", "oops"]);
+    assert!(
+        !blocked.status.success(),
+        "commit with a secret must be blocked"
+    );
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("1 finding"));
+
+    fs::write(dir.path().join("config.py"), "T = os.environ['T']\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    let allowed = git_with_leakhound_on_path(dir.path(), &["commit", "-qm", "fixed"]);
+    assert!(
+        allowed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+}
+
+#[test]
+fn install_hook_does_not_clobber_a_foreign_hook() {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q"]);
+    let hook = dir.path().join(".git/hooks/pre-commit");
+    fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    fs::write(&hook, "#!/bin/sh\necho mine\n").unwrap();
+
+    let install = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_leakhound"))
+            .arg("install-hook")
+            .arg(dir.path())
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    assert_eq!(install(&[]).status.code(), Some(2));
+    assert!(fs::read_to_string(&hook).unwrap().contains("echo mine"));
+
+    assert_eq!(install(&["--force"]).status.code(), Some(0));
+    assert!(
+        fs::read_to_string(&hook)
+            .unwrap()
+            .contains("leakhound --staged")
+    );
+    // Reinstalling over our own hook needs no --force.
+    assert_eq!(install(&[]).status.code(), Some(0));
+}
+
+#[test]
+fn install_hook_outside_a_repository_exits_two() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_leakhound"))
+        .arg("install-hook")
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}

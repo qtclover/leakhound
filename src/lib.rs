@@ -2,6 +2,7 @@ pub mod config;
 pub mod entropy;
 pub mod filter;
 pub mod git;
+pub mod hook;
 pub mod report;
 pub mod rules;
 pub mod scan;
@@ -24,6 +25,8 @@ pub enum Source {
     Worktree,
     /// Only reachable through git history; the current files no longer have it.
     History,
+    /// Added to the index and about to be committed.
+    Staged,
 }
 
 #[derive(Debug, Clone, Serialize)]
