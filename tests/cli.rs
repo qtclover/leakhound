@@ -378,3 +378,50 @@ fn output_flag_writes_the_report_to_a_file() {
     let sarif: serde_json::Value = serde_json::from_slice(&fs::read(&report).unwrap()).unwrap();
     assert_eq!(sarif["runs"][0]["results"].as_array().unwrap().len(), 1);
 }
+
+#[test]
+fn baseline_hides_known_findings_but_not_new_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = format!("ghp_{}", "zY9xW8vU7tS6rQ5pO4nM3lK2jI1hG0fE9dC8");
+    fs::write(dir.path().join("legacy.txt"), format!("{old}\n")).unwrap();
+    let baseline = dir.path().join("baseline.json");
+    let baseline_arg = baseline.to_str().unwrap();
+
+    // The baseline is itself a report, and must not be scanned as a source.
+    let save = leakhound(dir.path(), &["--format", "json", "--output", baseline_arg]);
+    assert_eq!(save.status.code(), Some(1));
+
+    let known = leakhound(dir.path(), &["--baseline", baseline_arg]);
+    assert_eq!(known.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&known.stderr).contains("1 known hidden by baseline"));
+
+    // A known secret that moves to another line is still known.
+    fs::write(
+        dir.path().join("legacy.txt"),
+        format!("moved\ndown\n{old}\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        leakhound(dir.path(), &["--baseline", baseline_arg])
+            .status
+            .code(),
+        Some(0)
+    );
+
+    fs::write(dir.path().join("new.txt"), token()).unwrap();
+    let out = leakhound(
+        dir.path(),
+        &["--baseline", baseline_arg, "--format", "json"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let findings = json(&out);
+    assert_eq!(findings.as_array().unwrap().len(), 1);
+    assert_eq!(findings[0]["path"], "new.txt");
+}
+
+#[test]
+fn missing_baseline_exits_two() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = leakhound(dir.path(), &["--baseline", "/definitely/not/here.json"]);
+    assert_eq!(out.status.code(), Some(2));
+}

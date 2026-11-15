@@ -4,7 +4,7 @@ use leakhound::config::Config;
 use leakhound::filter::PathFilter;
 use leakhound::scan::Scanner;
 use leakhound::walk::{WalkOptions, scan_tree};
-use leakhound::{git, hook, redact, report, verify};
+use leakhound::{baseline, git, hook, redact, report, verify};
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -63,6 +63,10 @@ struct ScanArgs {
     /// Output format
     #[arg(long, short, value_enum, default_value_t = Format::Text)]
     format: Format,
+
+    /// Hide findings already listed in this saved JSON report
+    #[arg(long, value_name = "FILE")]
+    baseline: Option<PathBuf>,
 
     /// Write the report to a file instead of standard output
     #[arg(long, short, value_name = "FILE")]
@@ -231,6 +235,15 @@ fn run(cli: ScanArgs) -> Result<bool> {
     findings.sort_by(|a, b| {
         (&a.path, a.line, a.column, &a.rule).cmp(&(&b.path, b.line, b.column, &b.rule))
     });
+    if let Some(file) = &cli.baseline {
+        let known = baseline::load(file)?;
+        let before = findings.len();
+        findings.retain(|f| !known.contains(&f.fingerprint));
+        summary.push_str(&format!(
+            ", {} known hidden by baseline",
+            before - findings.len()
+        ));
+    }
     if cli.verify {
         let active = verify::verify_findings(&mut findings);
         summary.push_str(&format!(", {active} verified active"));
