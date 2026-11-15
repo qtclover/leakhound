@@ -4,7 +4,8 @@ A fast secret scanner for source trees and git history, written in Rust.
 
 It finds API keys, tokens, private keys and passwords that were committed by
 mistake, including ones that were later deleted but are still sitting in the
-repository's history.
+repository's history. It can block them at commit time, check whether they
+still work, and report them to GitHub code scanning.
 
 ```console
 $ leakhound . --history
@@ -27,12 +28,15 @@ clones the repository can still read it.
 
 ## Install
 
+Download a static Linux binary from the
+[releases page](https://github.com/qtclover/leakhound/releases), or build from
+source with a recent stable Rust toolchain:
+
 ```sh
-cargo install --path .
+cargo install --git https://github.com/qtclover/leakhound
 ```
 
-Requires a recent stable Rust toolchain. `--history` also needs `git` on your
-`PATH`.
+`--history`, `--staged` and `install-hook` need `git` on your `PATH`.
 
 ## Usage
 
@@ -40,14 +44,18 @@ Requires a recent stable Rust toolchain. `--history` also needs `git` on your
 leakhound                      # scan the current directory
 leakhound path/to/repo         # scan somewhere else
 leakhound --history            # also scan every commit on every branch
-leakhound --format json        # machine-readable output
+leakhound --staged             # scan only what is staged for the next commit
+leakhound --verify             # ask each service whether the secret still works
+leakhound --format json        # machine-readable output (also: sarif)
+leakhound -o report.json -f json  # write the report to a file
 leakhound -x 'tests/fixtures/' # skip paths matching a glob (repeatable)
 leakhound --no-ignore          # include files hidden by .gitignore
 leakhound --show-secrets       # print secrets in full instead of redacted
-leakhound --list-rules         # show the built-in rules
+leakhound --list-rules         # show the active rules
+leakhound install-hook         # block commits that contain secrets
 ```
 
-Exit codes make it easy to use in CI or a pre-commit hook:
+Exit codes make it easy to use in scripts:
 
 | Code | Meaning          |
 | ---- | ---------------- |
@@ -57,6 +65,101 @@ Exit codes make it easy to use in CI or a pre-commit hook:
 
 To silence a known false positive, put `leakhound:allow` in a comment on the
 same line.
+
+## Stop secrets before they are committed
+
+```sh
+leakhound install-hook
+```
+
+This writes a git pre-commit hook that runs `leakhound --staged`. A commit that
+adds a secret is rejected before it exists, which is far cheaper than cleaning
+it out of history afterwards. An existing hook from another tool is left alone
+unless you pass `--force`, and `git commit --no-verify` skips the check for one
+commit.
+
+## Use it in GitHub Actions
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0 # full history
+- uses: qtclover/leakhound@v0.2.0
+```
+
+The action downloads the release binary, verifies its checksum and scans the
+checkout including history. The job fails if anything is found. It runs on
+Linux x86_64 runners.
+
+To show findings in the repository's Security tab instead, write SARIF and
+upload it:
+
+```yaml
+- uses: qtclover/leakhound@v0.2.0
+  continue-on-error: true
+  with:
+    args: --history --format sarif --output leakhound.sarif
+- uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: leakhound.sarif
+```
+
+`--format sarif` writes SARIF 2.1.0. Each result carries a fingerprint that
+stays the same when a secret moves to a different line, so GitHub tracks it as
+one alert. The upload step needs the `security-events: write` permission.
+
+## Check whether a secret is still live
+
+```console
+$ leakhound --verify
+github-token  GitHub token
+  deploy.sh:3:11
+  secret   ghp_************J6  (entropy 5.07)
+  verified inactive
+```
+
+With `--verify`, each finding is sent once to the service that issued it, using
+a read-only "who am I" request, and labelled:
+
+- **active**: the service accepted it. Revoke it now.
+- **inactive**: the service rejected it.
+- **unknown**: no clear answer, for example a rate limit or a network error.
+
+Supported: GitHub, GitLab, Slack, Stripe, OpenAI, Anthropic, Discord bot tokens
+and webhooks, Telegram, SendGrid and npm. Other findings are left unlabelled.
+
+Verification is off by default because it makes network requests with the
+secrets it found. A token for a self-hosted service such as a private GitLab
+instance shows as inactive, because only the public service is asked.
+
+## Configuration
+
+Put a `leakhound.toml` (or `.leakhound.toml`) in the directory you scan, or
+point at one with `--config`:
+
+```toml
+# Your own rules, alongside the built-in ones
+[[rules]]
+id = "acme-token"
+description = "Acme internal API token"
+regex = 'acme_[a-z0-9]{32}'
+
+[[rules]]
+id = "acme-pin"
+regex = 'acme-pin=(\d{6})'
+group = 1          # which capture group is the secret (default 0, the whole match)
+min_entropy = 2.0  # optional: ignore matches less random than this
+
+[allowlist]
+paths = ["tests/fixtures/", "*.lock"]  # gitignore-style globs to skip
+regexes = ['^AKIAIOSFODNN7']           # secrets matching these are ignored
+rules = ["jwt"]                        # built-in rules to switch off
+```
+
+Path exclusions apply to files on disk, staged changes and history alike. A
+mistake in the file (an unknown key, a regex that does not compile, a rule id
+that is already taken) stops the scan with an error instead of being silently
+ignored.
 
 ## What it detects
 
@@ -95,6 +198,7 @@ counts if it:
   hunk is exactly one block of added text, so every line ever added is scanned
   once. Hunks are batched and scanned in parallel. A secret that appears in
   many commits is reported once, attributed to the oldest commit that added it.
+  `--staged` reuses the same parser on `git diff --cached`.
 
 ## Performance
 
@@ -102,29 +206,35 @@ Measured on a 24-thread desktop with a warm file cache:
 
 | Input                                                  | Time   |
 | ------------------------------------------------------ | ------ |
-| 445 MB of source in 40,275 files, 24 threads           | 0.14 s |
-| The same, single thread (`-j1`)                        | 1.46 s |
-| ripgrep: 218 files plus the history of 2,344 commits   | 0.81 s |
+| 461 MB of source in 41,556 files, 24 threads           | 0.17 s |
+| The same, single thread (`-j1`)                        | 1.51 s |
+| ripgrep: 218 files plus the history of 2,344 commits   | 0.41 s |
 
 ## Limitations
 
-- Rules are compiled in; there is no config file for custom rules yet.
 - Every rule matches within a single line, so a secret split across lines is
   missed.
-- Findings are pattern matches. Nothing is verified against the issuing
-  service, so expect the occasional false positive, mostly test keys and
-  constants that happen to sit next to the word "secret".
+- Without `--verify`, findings are pattern matches only, so expect the
+  occasional false positive: mostly test keys and constants that happen to sit
+  next to the word "secret".
 - Merge commits are not diffed, so a secret introduced only by a merge
   resolution is not seen in history.
+- Release binaries and the GitHub Action cover Linux x86_64 only. Other
+  platforms build from source.
 
 ## Development
 
 ```sh
 cargo test
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 ```
 
 Test credentials are assembled at runtime so the repository never contains a
-string that another scanner would flag.
+string that another scanner would flag. CI enforces this by scanning the
+repository and its history with the binary it just built.
+
+Pushing a `v*` tag builds the static binary and publishes a release.
 
 ## License
 

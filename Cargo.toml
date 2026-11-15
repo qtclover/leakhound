@@ -1,6 +1,6 @@
 [package]
 name = "leakhound"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Fast secret scanner for source trees and git history"
 license = "MIT"
