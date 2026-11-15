@@ -4,6 +4,13 @@ version = "0.2.0"
 edition = "2024"
 description = "Fast secret scanner for source trees and git history"
 license = "MIT"
+repository = "https://github.com/qtclover/leakhound"
+homepage = "https://github.com/qtclover/leakhound"
+readme = "README.md"
+keywords = ["secrets", "security", "scanner", "git", "credentials"]
+categories = ["command-line-utilities", "development-tools"]
+rust-version = "1.88"
+exclude = [".github/", "action.yml", "bench/", "assets/"]
 
 [dependencies]
 anyhow = "1.0.104"
