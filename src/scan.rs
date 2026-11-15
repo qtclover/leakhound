@@ -29,6 +29,7 @@ pub struct Scanner {
     rules: Vec<Arc<Rule>>,
     /// Secrets matching any of these are never reported.
     allow: Vec<Regex>,
+    seam: Regex,
 }
 
 /// Byte-oriented, ASCII-only matching: secrets are ASCII, and without Unicode
@@ -96,6 +97,7 @@ impl Scanner {
             regexes,
             rules: rules.into_iter().map(Arc::new).collect(),
             allow,
+            seam: compile(SEAM)?,
         })
     }
 
@@ -105,19 +107,63 @@ impl Scanner {
 
     pub fn scan(&self, text: &str) -> Vec<Hit> {
         let text = text.as_bytes();
+        let mut found = self.matches(text);
+
+        // Second pass for secrets broken across lines as adjacent string
+        // literals. Only matches that actually cross a join are new.
+        if let Some((joined, seams)) = self.join_split_literals(text) {
+            for mut m in self.matches(&joined) {
+                if !seams.iter().any(|s| m.start < s.at && s.at < m.end) {
+                    continue;
+                }
+                // Translate the start back into the original text.
+                m.start += seams
+                    .iter()
+                    .take_while(|s| s.at <= m.start)
+                    .map(|s| s.removed)
+                    .sum::<usize>();
+                // The first pass may have matched just the first fragment.
+                found.retain(|f| !(f.rule == m.rule && f.start == m.start));
+                found.push(m);
+            }
+            found.sort_by_key(|m| m.start);
+        }
+        if found.is_empty() {
+            return Vec::new();
+        }
+
+        let newlines: Vec<usize> = memchr::memchr_iter(b'\n', text).collect();
+        let mut hits = Vec::with_capacity(found.len());
+        for m in found {
+            let line = newlines.partition_point(|&nl| nl < m.start) + 1;
+            let line_start = if line == 1 { 0 } else { newlines[line - 2] + 1 };
+            let line_end = newlines.get(line - 1).copied().unwrap_or(text.len());
+            if memchr::memmem::find(&text[line_start..line_end], ALLOW_MARKER.as_bytes()).is_some()
+            {
+                continue;
+            }
+            hits.push(Hit {
+                rule: self.rules[m.rule].clone(),
+                line,
+                column: String::from_utf8_lossy(&text[line_start..m.start])
+                    .chars()
+                    .count()
+                    + 1,
+                secret: m.secret,
+                entropy: m.entropy,
+            });
+        }
+        hits
+    }
+
+    /// Every rule match in `text`, filtered and sorted by position.
+    fn matches(&self, text: &[u8]) -> Vec<Match> {
         let matched = self.set.matches(text);
         if !matched.matched_any() {
             return Vec::new();
         }
 
-        struct Raw {
-            rule: usize,
-            start: usize,
-            end: usize,
-            entropy: f64,
-        }
-
-        let mut raw = Vec::new();
+        let mut found = Vec::new();
         for idx in matched.iter() {
             let rule = &self.rules[idx];
             for caps in self.regexes[idx].captures_iter(text) {
@@ -128,71 +174,102 @@ impl Scanner {
                 if rule.min_entropy.is_some_and(|min| entropy < min) {
                     continue;
                 }
-                if rule.generic && is_placeholder(&String::from_utf8_lossy(m.as_bytes())) {
+                let secret = String::from_utf8_lossy(m.as_bytes());
+                if rule.generic && is_placeholder(&secret) {
                     continue;
                 }
                 if self.allow.iter().any(|a| a.is_match(m.as_bytes())) {
                     continue;
                 }
-                raw.push(Raw {
+                found.push(Match {
                     rule: idx,
                     start: m.start(),
                     end: m.end(),
                     entropy,
+                    secret: secret.into_owned(),
                 });
             }
-        }
-        if raw.is_empty() {
-            return Vec::new();
         }
 
         // A generic rule adds nothing when a specific rule already claimed the
         // same bytes, or when another generic rule reported the same span.
-        let specific: Vec<(usize, usize)> = raw
+        let specific: Vec<(usize, usize)> = found
             .iter()
-            .filter(|r| !self.rules[r.rule].generic)
-            .map(|r| (r.start, r.end))
+            .filter(|m| !self.rules[m.rule].generic)
+            .map(|m| (m.start, m.end))
             .collect();
         let mut seen_generic: Vec<(usize, usize)> = Vec::new();
-        raw.retain(|r| {
-            if !self.rules[r.rule].generic {
+        found.retain(|m| {
+            if !self.rules[m.rule].generic {
                 return true;
             }
-            if specific.iter().any(|&(s, e)| r.start < e && s < r.end) {
+            if specific.iter().any(|&(s, e)| m.start < e && s < m.end) {
                 return false;
             }
-            if seen_generic.contains(&(r.start, r.end)) {
+            if seen_generic.contains(&(m.start, m.end)) {
                 return false;
             }
-            seen_generic.push((r.start, r.end));
+            seen_generic.push((m.start, m.end));
             true
         });
-        raw.sort_by_key(|r| r.start);
+        found.sort_by_key(|m| m.start);
+        found
+    }
 
-        let newlines: Vec<usize> = memchr::memchr_iter(b'\n', text).collect();
-        let mut hits = Vec::with_capacity(raw.len());
-        for r in raw {
-            let line = newlines.partition_point(|&nl| nl < r.start) + 1;
-            let line_start = if line == 1 { 0 } else { newlines[line - 2] + 1 };
-            let line_end = newlines.get(line - 1).copied().unwrap_or(text.len());
-            if memchr::memmem::find(&text[line_start..line_end], ALLOW_MARKER.as_bytes()).is_some()
-            {
-                continue;
-            }
-            hits.push(Hit {
-                rule: self.rules[r.rule].clone(),
-                line,
-                column: String::from_utf8_lossy(&text[line_start..r.start])
-                    .chars()
-                    .count()
-                    + 1,
-                secret: String::from_utf8_lossy(&text[r.start..r.end]).into_owned(),
-                entropy: r.entropy,
+    /// Glue together string literals that continue on the next line, as in
+    ///
+    /// ```text
+    /// key = "ghp_aB3dE6gH9jK2" +
+    ///       "mN5pQ8sT1vW4yZ7b"
+    /// ```
+    ///
+    /// by cutting out everything from the closing quote to the next opening
+    /// quote. Returns the glued text and where each cut was made, or `None`
+    /// when the text has no such continuation (the usual case).
+    fn join_split_literals(&self, text: &[u8]) -> Option<(Vec<u8>, Vec<Seam>)> {
+        let mut cuts = self.seam.find_iter(text).peekable();
+        cuts.peek()?;
+
+        let mut joined = Vec::with_capacity(text.len());
+        let mut seams = Vec::new();
+        let mut copied = 0;
+        for cut in cuts {
+            joined.extend_from_slice(&text[copied..cut.start()]);
+            seams.push(Seam {
+                at: joined.len(),
+                removed: cut.len(),
             });
+            copied = cut.end();
         }
-        hits
+        joined.extend_from_slice(&text[copied..]);
+        Some((joined, seams))
     }
 }
+
+struct Match {
+    rule: usize,
+    start: usize,
+    end: usize,
+    entropy: f64,
+    secret: String,
+}
+
+/// A place where two string literals were glued together.
+struct Seam {
+    /// Offset in the glued text where the second literal now begins.
+    at: usize,
+    /// How many bytes of the original text were cut out here.
+    removed: usize,
+}
+
+/// A closing quote, an optional `+`, `.` or `\` continuation, a line break,
+/// and the matching opening quote. A comma is deliberately not accepted:
+/// that separates list items, it does not continue a string.
+const SEAM: &str = concat!(
+    r#""[ \t]*[+.\\]?[ \t]*\r?\n[ \t]*[+.]?[ \t]*""#,
+    "|",
+    r#"'[ \t]*[+.\\]?[ \t]*\r?\n[ \t]*[+.]?[ \t]*'"#,
+);
 
 #[cfg(test)]
 mod tests {
@@ -305,5 +382,56 @@ mod tests {
                 rule.id
             );
         }
+    }
+
+    fn split_token(glue: &str) -> (String, String) {
+        let token = github_token();
+        let text = format!("key = \"{}\"{glue}\"{}\"\n", &token[..20], &token[20..]);
+        (text, token)
+    }
+
+    #[test]
+    fn joins_literals_continued_on_the_next_line() {
+        let s = Scanner::new();
+        for glue in [" +\n      ", "\n      ", " \\\n  ", "\r\n\t+ ", "\n    . "] {
+            let (text, token) = split_token(glue);
+            let hits = s.scan(&text);
+            assert_eq!(ids(&hits), ["github-token"], "glue {glue:?}");
+            assert_eq!(hits[0].secret, token, "glue {glue:?}");
+            assert_eq!((hits[0].line, hits[0].column), (1, 8), "glue {glue:?}");
+        }
+    }
+
+    #[test]
+    fn does_not_join_separate_list_items_or_other_lines() {
+        let s = Scanner::new();
+        for glue in [",\n      ", "\nother = ", ";\n"] {
+            let (text, _) = split_token(glue);
+            assert!(s.scan(&text).is_empty(), "glue {glue:?}");
+        }
+    }
+
+    #[test]
+    fn joined_pass_does_not_duplicate_ordinary_hits() {
+        let s = Scanner::new();
+        let (split, token) = split_token(" +\n  ");
+        let text = format!("a = \"{token}\"\n\n{split}b = \"{token}\"\n");
+        let hits = s.scan(&text);
+        assert_eq!(hits.len(), 3);
+        assert_eq!(
+            hits.iter().map(|h| h.line).collect::<Vec<_>>(),
+            [1, 3, 5],
+            "positions after a join must map back to the original lines"
+        );
+    }
+
+    #[test]
+    fn single_quoted_literals_join_only_with_the_same_quote() {
+        let s = Scanner::new();
+        let token = github_token();
+        let same = format!("k = '{}' +\n  '{}'\n", &token[..20], &token[20..]);
+        assert_eq!(s.scan(&same).len(), 1);
+        let mixed = format!("k = '{}' +\n  \"{}\"\n", &token[..20], &token[20..]);
+        assert!(s.scan(&mixed).is_empty());
     }
 }
