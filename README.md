@@ -1,6 +1,12 @@
 # leakhound
 
+[![CI](https://github.com/qtclover/leakhound/actions/workflows/ci.yml/badge.svg)](https://github.com/qtclover/leakhound/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/qtclover/leakhound)](https://github.com/qtclover/leakhound/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A fast secret scanner for source trees and git history, written in Rust.
+
+![leakhound's pre-commit hook rejecting a commit that contains a GitHub token](https://raw.githubusercontent.com/qtclover/leakhound/main/assets/demo.svg)
 
 It finds API keys, tokens, private keys and passwords that were committed by
 mistake, including ones that were later deleted but are still sitting in the

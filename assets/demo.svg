@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 327" width="760" role="img" aria-label="Terminal session: leakhound's pre-commit hook rejects a commit that contains a GitHub token">
+<style>
+text{font:14px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;fill:#d7dce5;white-space:pre}
+.red{fill:#ff6b6b;font-weight:700}.bold{font-weight:700;fill:#fff}.dim{fill:#7d8799}.green{fill:#6bd68a}
+@keyframes show0{0%,12.04%{opacity:0}12.12%,98%{opacity:1}100%{opacity:0}}.l0{opacity:0;animation:show0 12.38s linear infinite}@keyframes type0{0%,12.12%{width:0;animation-timing-function:steps(22,end)}20.11%,100%{width:185.5px}}.c0{animation:type0 12.38s linear infinite}@keyframes show1{0%,23.67%{opacity:0}23.75%,98%{opacity:1}100%{opacity:0}}.l1{opacity:0;animation:show1 12.38s linear infinite}@keyframes show2{0%,31.50%{opacity:0}31.58%,98%{opacity:1}100%{opacity:0}}.l2{opacity:0;animation:show2 12.38s linear infinite}@keyframes type2{0%,31.58%{width:0;animation-timing-function:steps(33,end)}43.58%,100%{width:278.2px}}.c2{animation:type2 12.38s linear infinite}@keyframes show3{0%,47.13%{opacity:0}47.21%,98%{opacity:1}100%{opacity:0}}.l3{opacity:0;animation:show3 12.38s linear infinite}@keyframes show4{0%,47.70%{opacity:0}47.78%,98%{opacity:1}100%{opacity:0}}.l4{opacity:0;animation:show4 12.38s linear infinite}@keyframes show5{0%,48.26%{opacity:0}48.34%,98%{opacity:1}100%{opacity:0}}.l5{opacity:0;animation:show5 12.38s linear infinite}@keyframes show6{0%,48.83%{opacity:0}48.91%,98%{opacity:1}100%{opacity:0}}.l6{opacity:0;animation:show6 12.38s linear infinite}@keyframes show7{0%,56.66%{opacity:0}56.74%,98%{opacity:1}100%{opacity:0}}.l7{opacity:0;animation:show7 12.38s linear infinite}@keyframes type7{0%,56.74%{width:0;animation-timing-function:steps(17,end)}62.92%,100%{width:143.3px}}.c7{animation:type7 12.38s linear infinite}@keyframes show8{0%,66.48%{opacity:0}66.56%,98%{opacity:1}100%{opacity:0}}.l8{opacity:0;animation:show8 12.38s linear infinite}@keyframes show9{0%,67.04%{opacity:0}67.12%,98%{opacity:1}100%{opacity:0}}.l9{opacity:0;animation:show9 12.38s linear infinite}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;opacity:1!important}rect[class^="c"]{width:760px}}
+</style>
+<rect width="760" height="327" rx="10" fill="#14171d"/>
+<rect width="760" height="34" rx="10" fill="#1e222b"/><rect y="24" width="760" height="10" fill="#1e222b"/>
+<circle cx="20" cy="17" r="6" fill="#ff5f57"/><circle cx="40" cy="17" r="6" fill="#febc2e"/><circle cx="60" cy="17" r="6" fill="#28c840"/>
+<g xml:space="preserve">
+<g class="l0"><text x="22" y="58" class="green">$</text><clipPath id="clip0"><rect class="c0" x="38.9" y="42" height="22" width="0"/></clipPath><text x="38.9" y="58" clip-path="url(#clip0)">leakhound install-hook</text></g>
+<text class="l1" x="22" y="80">installed pre-commit hook at ./.git/hooks/pre-commit</text>
+<g class="l2"><text x="22" y="113" class="green">$</text><clipPath id="clip2"><rect class="c2" x="38.9" y="97" height="22" width="0"/></clipPath><text x="38.9" y="113" clip-path="url(#clip2)">git commit -m &quot;add deploy script&quot;</text></g>
+<text class="l3" x="22" y="135"><tspan class="red">github-token</tspan>  GitHub token</text>
+<text class="l4" x="22" y="157"><tspan class="bold">  deploy.sh:3:11</tspan></text>
+<text class="l5" x="22" y="179">  secret   ghp_************J6  <tspan class="dim">(entropy 5.07)</tspan></text>
+<text class="l6" x="22" y="212">scanned staged changes (0.0 MB of added lines) in 0.00s, 1 finding</text>
+<g class="l7"><text x="22" y="245" class="green">$</text><clipPath id="clip7"><rect class="c7" x="38.9" y="229" height="22" width="0"/></clipPath><text x="38.9" y="245" clip-path="url(#clip7)">git log --oneline</text></g>
+<text class="l8" x="22" y="267">d844e32 initial</text>
+<text class="l9" x="22" y="289"><tspan class="dim"># the commit with the token never happened</tspan></text>
+</g>
+</svg>
