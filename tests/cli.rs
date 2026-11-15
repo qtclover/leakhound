@@ -205,3 +205,44 @@ fn broken_config_exits_two() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("invalid regex"));
 }
+
+#[test]
+fn sarif_output_has_rules_results_and_locations() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/config.py"),
+        format!("a = 1\nT = '{}'\n", token()),
+    )
+    .unwrap();
+
+    let out = leakhound(dir.path(), &["--format", "sarif"]);
+    assert_eq!(out.status.code(), Some(1));
+    let sarif = json(&out);
+    assert_eq!(sarif["version"], "2.1.0");
+
+    let run = &sarif["runs"][0];
+    assert_eq!(run["tool"]["driver"]["name"], "leakhound");
+    assert_eq!(run["tool"]["driver"]["rules"].as_array().unwrap().len(), 22);
+
+    let results = run["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["ruleId"], "github-token");
+    let location = &results[0]["locations"][0]["physicalLocation"];
+    assert_eq!(location["artifactLocation"]["uri"], "src/config.py");
+    assert_eq!(location["region"]["startLine"], 2);
+    assert!(results[0]["partialFingerprints"]["leakhound/v1"].is_string());
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(&token()));
+}
+
+#[test]
+fn sarif_output_is_valid_when_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.txt"), "nothing here\n").unwrap();
+    let out = leakhound(dir.path(), &["--format", "sarif"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        json(&out)["runs"][0]["results"].as_array().unwrap().len(),
+        0
+    );
+}

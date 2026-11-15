@@ -4,7 +4,7 @@ use leakhound::config::Config;
 use leakhound::filter::PathFilter;
 use leakhound::scan::Scanner;
 use leakhound::walk::{WalkOptions, scan_tree};
-use leakhound::{Finding, Source, git, redact};
+use leakhound::{git, redact, report};
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -15,6 +15,8 @@ use std::time::Instant;
 enum Format {
     Text,
     Json,
+    /// For GitHub code scanning and other SARIF consumers
+    Sarif,
 }
 
 /// Find leaked credentials in a directory and, optionally, its git history.
@@ -181,11 +183,15 @@ fn run(cli: Cli) -> Result<bool> {
 
     let mut out = std::io::stdout().lock();
     match cli.format {
+        Format::Text => report::text(&mut out, &findings, std::io::stdout().is_terminal())?,
         Format::Json => {
-            serde_json::to_writer_pretty(&mut out, &findings)?;
+            report::json(&mut out, &findings)?;
             writeln!(out)?;
         }
-        Format::Text => print_text(&mut out, &findings, std::io::stdout().is_terminal())?,
+        Format::Sarif => {
+            serde_json::to_writer_pretty(&mut out, &report::sarif(&findings, scanner.rules()))?;
+            writeln!(out)?;
+        }
     }
 
     eprintln!(
@@ -195,31 +201,4 @@ fn run(cli: Cli) -> Result<bool> {
         if findings.len() == 1 { "" } else { "s" }
     );
     Ok(!findings.is_empty())
-}
-
-fn print_text(out: &mut impl Write, findings: &[Finding], color: bool) -> Result<()> {
-    let (red, bold, dim, reset) = if color {
-        ("\x1b[31m", "\x1b[1m", "\x1b[2m", "\x1b[0m")
-    } else {
-        ("", "", "", "")
-    };
-    for f in findings {
-        writeln!(out, "{red}{bold}{}{reset}  {}", f.rule, f.description)?;
-        writeln!(out, "  {bold}{}:{}:{}{reset}", f.path, f.line, f.column)?;
-        writeln!(
-            out,
-            "  secret   {}  {dim}(entropy {:.2}){reset}",
-            f.secret, f.entropy
-        )?;
-        if let Some(c) = &f.commit {
-            let label = match f.source {
-                Source::Worktree => "added in",
-                Source::History => "history ",
-            };
-            let short = &c.hash[..c.hash.len().min(10)];
-            writeln!(out, "  {label} {short} {dim}{} {}{reset}", c.date, c.author)?;
-        }
-        writeln!(out)?;
-    }
-    Ok(())
 }

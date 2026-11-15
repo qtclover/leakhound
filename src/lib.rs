@@ -2,6 +2,7 @@ pub mod config;
 pub mod entropy;
 pub mod filter;
 pub mod git;
+pub mod report;
 pub mod rules;
 pub mod scan;
 pub mod walk;
@@ -34,6 +35,9 @@ pub struct Finding {
     pub column: usize,
     pub secret: String,
     pub entropy: f64,
+    /// Stable across runs for the same secret in the same file, whatever line
+    /// it moves to. Lets other tools track or baseline a finding.
+    pub fingerprint: String,
     pub source: Source,
     /// The oldest commit that added this secret, when history was scanned.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,12 +52,26 @@ impl Finding {
             path: path.to_string(),
             line: hit.line,
             column: hit.column,
+            fingerprint: fingerprint(&hit.rule.id, path, &hit.secret),
             secret: hit.secret,
             entropy: hit.entropy,
             source,
             commit: None,
         }
     }
+}
+
+/// FNV-1a over rule, path and secret. Written out by hand because the standard
+/// library's hasher is not guaranteed to give the same value across releases.
+fn fingerprint(rule: &str, path: &str, secret: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for part in [rule, path, secret] {
+        for &byte in part.as_bytes().iter().chain(&[0]) {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    format!("{hash:016x}")
 }
 
 /// Keep enough of a secret to recognise it, hide the rest.
@@ -69,7 +87,17 @@ pub fn redact(secret: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::redact;
+    use super::{fingerprint, redact};
+
+    #[test]
+    fn fingerprint_is_stable_and_sensitive_to_each_part() {
+        let base = fingerprint("rule", "a.txt", "s3cret");
+        assert_eq!(base, fingerprint("rule", "a.txt", "s3cret"));
+        assert_eq!(base.len(), 16);
+        assert_ne!(base, fingerprint("rule", "b.txt", "s3cret"));
+        assert_ne!(base, fingerprint("rule", "a.txt", "s3cret2"));
+        assert_ne!(base, fingerprint("rulea", ".txt", "s3cret"));
+    }
 
     #[test]
     fn redact_hides_short_secrets_entirely() {
