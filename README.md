@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/qtclover/leakhound/actions/workflows/ci.yml/badge.svg)](https://github.com/qtclover/leakhound/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/qtclover/leakhound)](https://github.com/qtclover/leakhound/releases/latest)
+[![crates.io](https://img.shields.io/crates/v/leakhound)](https://crates.io/crates/leakhound)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A fast secret scanner for source trees and git history, written in Rust.
@@ -39,7 +40,7 @@ Download a binary for Linux, macOS or Windows from the
 source with Rust 1.88 or newer:
 
 ```sh
-cargo install --git https://github.com/qtclover/leakhound
+cargo install leakhound
 ```
 
 `--history`, `--staged` and `install-hook` need `git` on your `PATH`.
