@@ -159,3 +159,49 @@ fn missing_path_exits_two() {
     let out = leakhound(Path::new("/definitely/not/a/real/path"), &[]);
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn config_file_adds_rules_and_allowlists() {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q"]);
+    fs::create_dir(dir.path().join("fixtures")).unwrap();
+    fs::write(dir.path().join("fixtures/creds.txt"), token()).unwrap();
+    fs::write(dir.path().join("app.conf"), "key: acme_0123456789abcdef\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "one"]);
+
+    // Without a config only the built-in rule fires.
+    let before = json(&leakhound(dir.path(), &["--format", "json"]));
+    assert_eq!(before.as_array().unwrap().len(), 1);
+    assert_eq!(before[0]["rule"], "github-token");
+
+    fs::write(
+        dir.path().join("leakhound.toml"),
+        "[[rules]]\nid = 'acme-token'\nregex = 'acme_[a-z0-9]{16}'\n\n\
+         [allowlist]\npaths = ['fixtures/']\n",
+    )
+    .unwrap();
+
+    // With it, the custom rule fires and the fixture is skipped, on disk and
+    // in history alike.
+    let after = json(&leakhound(dir.path(), &["--history", "--format", "json"]));
+    assert_eq!(after.as_array().unwrap().len(), 1);
+    assert_eq!(after[0]["rule"], "acme-token");
+    assert_eq!(after[0]["path"], "app.conf");
+
+    let listed = leakhound(dir.path(), &["--list-rules"]);
+    assert!(String::from_utf8_lossy(&listed.stdout).contains("acme-token"));
+}
+
+#[test]
+fn broken_config_exits_two() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("leakhound.toml"),
+        "[[rules]]\nid = 'x'\nregex = '('\n",
+    )
+    .unwrap();
+    let out = leakhound(dir.path(), &[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("invalid regex"));
+}

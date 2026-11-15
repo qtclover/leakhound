@@ -6,18 +6,43 @@
 //! they additionally go through an entropy gate and a placeholder filter, and
 //! they give way to any specific rule that matches the same bytes.
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Rule {
-    pub id: &'static str,
-    pub description: &'static str,
-    pub pattern: &'static str,
+    pub id: String,
+    pub description: String,
+    pub pattern: String,
     pub group: usize,
     pub min_entropy: Option<f64>,
     pub generic: bool,
 }
 
-const fn specific(id: &'static str, description: &'static str, pattern: &'static str) -> Rule {
-    Rule {
+/// The compiled-in form of a rule; `builtin()` turns these into `Rule`s so
+/// that built-in and user-defined rules are the same type from then on.
+struct Builtin {
+    id: &'static str,
+    description: &'static str,
+    pattern: &'static str,
+    group: usize,
+    min_entropy: Option<f64>,
+    generic: bool,
+}
+
+pub fn builtin() -> Vec<Rule> {
+    BUILTIN
+        .iter()
+        .map(|b| Rule {
+            id: b.id.to_string(),
+            description: b.description.to_string(),
+            pattern: b.pattern.to_string(),
+            group: b.group,
+            min_entropy: b.min_entropy,
+            generic: b.generic,
+        })
+        .collect()
+}
+
+const fn specific(id: &'static str, description: &'static str, pattern: &'static str) -> Builtin {
+    Builtin {
         id,
         description,
         pattern,
@@ -32,8 +57,8 @@ const fn generic(
     description: &'static str,
     pattern: &'static str,
     min_entropy: f64,
-) -> Rule {
-    Rule {
+) -> Builtin {
+    Builtin {
         id,
         description,
         pattern,
@@ -43,13 +68,13 @@ const fn generic(
     }
 }
 
-pub const RULES: &[Rule] = &[
+const BUILTIN: &[Builtin] = &[
     specific(
         "aws-access-key-id",
         "AWS access key ID",
         r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b",
     ),
-    Rule {
+    Builtin {
         id: "aws-secret-access-key",
         description: "AWS secret access key",
         pattern: r#"(?i)aws.{0,20}?(?:secret|sk).{0,20}?["']([A-Za-z0-9/+=]{40})["']"#,

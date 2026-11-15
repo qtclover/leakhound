@@ -4,6 +4,7 @@
 //! the diff: with zero context lines each hunk is exactly one block of added
 //! text, which is all a secret scanner needs to look at.
 
+use crate::filter::PathFilter;
 use crate::scan::Scanner;
 use crate::{Commit, Finding, Source};
 use anyhow::{Context, Result, bail};
@@ -56,7 +57,11 @@ fn scan_batch(batch: &mut Vec<Hunk>, scanner: &Scanner, out: &mut Vec<Finding>) 
     batch.clear();
 }
 
-pub fn scan_history(dir: &Path, scanner: &Scanner) -> Result<(Vec<Finding>, HistoryStats)> {
+pub fn scan_history(
+    dir: &Path,
+    scanner: &Scanner,
+    filter: &PathFilter,
+) -> Result<(Vec<Finding>, HistoryStats)> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -131,7 +136,9 @@ pub fn scan_history(dir: &Path, scanner: &Scanner) -> Result<(Vec<Finding>, Hist
             }
         } else if starts_hunk {
             in_header = false;
-            if let Some(commit) = &commit {
+            if let Some(commit) = &commit
+                && !filter.is_excluded(&path)
+            {
                 let header = String::from_utf8_lossy(&line);
                 current = Some(Hunk {
                     commit: commit.clone(),
@@ -165,9 +172,9 @@ pub fn scan_history(dir: &Path, scanner: &Scanner) -> Result<(Vec<Finding>, Hist
 
     // The log runs newest first, so letting later entries overwrite earlier
     // ones leaves each secret attributed to the oldest commit that added it.
-    let mut oldest: HashMap<(&'static str, String, String), Finding> = HashMap::new();
+    let mut oldest: HashMap<(String, String, String), Finding> = HashMap::new();
     for f in findings {
-        oldest.insert((f.rule, f.path.clone(), f.secret.clone()), f);
+        oldest.insert((f.rule.clone(), f.path.clone(), f.secret.clone()), f);
     }
     Ok((oldest.into_values().collect(), stats))
 }

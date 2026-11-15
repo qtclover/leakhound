@@ -1,4 +1,6 @@
+pub mod config;
 pub mod entropy;
+pub mod filter;
 pub mod git;
 pub mod rules;
 pub mod scan;
@@ -25,8 +27,8 @@ pub enum Source {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Finding {
-    pub rule: &'static str,
-    pub description: &'static str,
+    pub rule: String,
+    pub description: String,
     pub path: String,
     pub line: usize,
     pub column: usize,
@@ -41,8 +43,8 @@ pub struct Finding {
 impl Finding {
     pub fn from_hit(hit: scan::Hit, path: &str, source: Source) -> Self {
         Finding {
-            rule: hit.rule.id,
-            description: hit.rule.description,
+            rule: hit.rule.id.clone(),
+            description: hit.rule.description.clone(),
             path: path.to_string(),
             line: hit.line,
             column: hit.column,

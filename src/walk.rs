@@ -1,9 +1,9 @@
 //! Scan the files on disk, in parallel.
 
+use crate::filter::PathFilter;
 use crate::scan::Scanner;
 use crate::{Finding, Source};
-use anyhow::{Context, Result};
-use ignore::overrides::OverrideBuilder;
+use anyhow::Result;
 use ignore::{WalkBuilder, WalkState};
 use std::path::Path;
 use std::sync::Mutex;
@@ -12,8 +12,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub struct WalkOptions {
     /// Also scan files that .gitignore and friends would hide.
     pub no_ignore: bool,
-    /// Glob patterns to leave out, gitignore syntax.
-    pub exclude: Vec<String>,
     /// Files larger than this many bytes are skipped.
     pub max_size: u64,
     pub threads: usize,
@@ -33,15 +31,9 @@ fn looks_binary(data: &[u8]) -> bool {
 pub fn scan_tree(
     root: &Path,
     scanner: &Scanner,
+    filter: &PathFilter,
     opts: &WalkOptions,
 ) -> Result<(Vec<Finding>, WalkStats)> {
-    let mut overrides = OverrideBuilder::new(root);
-    for glob in &opts.exclude {
-        overrides
-            .add(&format!("!{glob}"))
-            .with_context(|| format!("invalid --exclude pattern {glob:?}"))?;
-    }
-
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false) // dotfiles such as .env are exactly where secrets live
@@ -50,7 +42,7 @@ pub fn scan_tree(
         .git_exclude(!opts.no_ignore)
         .ignore(!opts.no_ignore)
         .parents(!opts.no_ignore)
-        .overrides(overrides.build()?)
+        .overrides(filter.overrides(root)?)
         .threads(opts.threads)
         .filter_entry(|e| e.file_name() != ".git");
 

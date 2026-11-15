@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use clap::{Parser, ValueEnum};
-use leakhound::rules::RULES;
+use leakhound::config::Config;
+use leakhound::filter::PathFilter;
 use leakhound::scan::Scanner;
 use leakhound::walk::{WalkOptions, scan_tree};
 use leakhound::{Finding, Source, git, redact};
@@ -54,7 +55,11 @@ struct Cli {
     #[arg(long, short = 'j', value_name = "N")]
     threads: Option<usize>,
 
-    /// Print the built-in rules and exit
+    /// Rules and allowlists file (default: leakhound.toml in the scanned directory)
+    #[arg(long, short, value_name = "FILE")]
+    config: Option<PathBuf>,
+
+    /// Print the active rules and exit
     #[arg(long)]
     list_rules: bool,
 }
@@ -88,16 +93,22 @@ fn is_broken_pipe(err: &anyhow::Error) -> bool {
 
 /// Returns whether any secrets were found.
 fn run(cli: Cli) -> Result<bool> {
+    if !cli.path.exists() {
+        bail!("{} does not exist", cli.path.display());
+    }
+    let config = match cli.config.clone().or_else(|| Config::find(&cli.path)) {
+        Some(file) => Config::load(&file)?,
+        None => Config::default(),
+    };
+    let scanner = Scanner::with_config(&config)?;
     if cli.list_rules {
-        let width = RULES.iter().map(|r| r.id.len()).max().unwrap_or(0);
+        let rules = scanner.rules();
+        let width = rules.iter().map(|r| r.id.len()).max().unwrap_or(0);
         let mut out = std::io::stdout().lock();
-        for rule in RULES {
+        for rule in rules {
             writeln!(out, "{:width$}  {}", rule.id, rule.description)?;
         }
         return Ok(false);
-    }
-    if !cli.path.exists() {
-        bail!("{} does not exist", cli.path.display());
     }
     if cli.history && !cli.path.is_dir() {
         bail!("--history needs a directory inside a git repository");
@@ -112,14 +123,15 @@ fn run(cli: Cli) -> Result<bool> {
         .build_global()?;
 
     let started = Instant::now();
-    let scanner = Scanner::new();
+    let mut excluded = cli.exclude;
+    excluded.extend(config.allow_paths);
+    let filter = PathFilter::new(&cli.path, excluded)?;
     let opts = WalkOptions {
         no_ignore: cli.no_ignore,
-        exclude: cli.exclude,
         max_size: cli.max_size.saturating_mul(1 << 20),
         threads,
     };
-    let (mut findings, walk_stats) = scan_tree(&cli.path, &scanner, &opts)?;
+    let (mut findings, walk_stats) = scan_tree(&cli.path, &scanner, &filter, &opts)?;
     let mut summary = format!(
         "scanned {} files ({:.1} MB)",
         walk_stats.files,
@@ -127,7 +139,7 @@ fn run(cli: Cli) -> Result<bool> {
     );
 
     if cli.history {
-        let (history, stats) = git::scan_history(&cli.path, &scanner)?;
+        let (history, stats) = git::scan_history(&cli.path, &scanner, &filter)?;
         summary.push_str(&format!(
             " and {} commits ({:.1} MB of added lines)",
             stats.commits,
@@ -137,16 +149,16 @@ fn run(cli: Cli) -> Result<bool> {
         // A secret still on disk is reported once, as a worktree finding that
         // remembers which commit introduced it. Anything left over exists only
         // in history.
-        let mut on_disk: HashMap<(&str, String, String), Vec<usize>> = HashMap::new();
+        let mut on_disk: HashMap<(String, String, String), Vec<usize>> = HashMap::new();
         for (i, f) in findings.iter().enumerate() {
             on_disk
-                .entry((f.rule, f.path.clone(), f.secret.clone()))
+                .entry((f.rule.clone(), f.path.clone(), f.secret.clone()))
                 .or_default()
                 .push(i);
         }
         let mut history_only = Vec::new();
         for f in history {
-            match on_disk.get(&(f.rule, f.path.clone(), f.secret.clone())) {
+            match on_disk.get(&(f.rule.clone(), f.path.clone(), f.secret.clone())) {
                 Some(indexes) => {
                     for &i in indexes {
                         findings[i].commit = f.commit.clone();
@@ -159,7 +171,7 @@ fn run(cli: Cli) -> Result<bool> {
     }
 
     findings.sort_by(|a, b| {
-        (&a.path, a.line, a.column, a.rule).cmp(&(&b.path, b.line, b.column, b.rule))
+        (&a.path, a.line, a.column, &a.rule).cmp(&(&b.path, b.line, b.column, &b.rule))
     });
     if !cli.show_secrets {
         for f in &mut findings {

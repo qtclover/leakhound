@@ -1,15 +1,18 @@
 //! The core matcher: text in, hits out.
 
+use crate::config::Config;
 use crate::entropy::shannon;
-use crate::rules::{RULES, Rule, is_placeholder};
+use crate::rules::{self, Rule, is_placeholder};
+use anyhow::{Context, Result, bail};
 use regex::bytes::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
+use std::sync::Arc;
 
 /// Put this anywhere on a line to silence findings on that line.
 pub const ALLOW_MARKER: &str = "leakhound:allow";
 
 #[derive(Debug, Clone)]
 pub struct Hit {
-    pub rule: &'static Rule,
+    pub rule: Arc<Rule>,
     /// 1-based line of the secret.
     pub line: usize,
     /// 1-based column (in characters) of the secret.
@@ -23,6 +26,15 @@ pub struct Scanner {
     /// common case (a file with no secrets) costs a single scan.
     set: RegexSet,
     regexes: Vec<Regex>,
+    rules: Vec<Arc<Rule>>,
+    /// Secrets matching any of these are never reported.
+    allow: Vec<Regex>,
+}
+
+/// Byte-oriented, ASCII-only matching: secrets are ASCII, and without Unicode
+/// tables the regex engine can stay in its fast DFA throughout.
+fn compile(pattern: &str) -> Result<Regex> {
+    Ok(RegexBuilder::new(pattern).unicode(false).build()?)
 }
 
 impl Default for Scanner {
@@ -32,23 +44,63 @@ impl Default for Scanner {
 }
 
 impl Scanner {
+    /// A scanner with only the built-in rules.
     pub fn new() -> Self {
-        // Byte-oriented, ASCII-only matching: secrets are ASCII, and without
-        // Unicode tables the regex engine can stay in its fast DFA throughout.
-        let set = RegexSetBuilder::new(RULES.iter().map(|r| r.pattern))
-            .unicode(false)
-            .build()
-            .expect("built-in rules compile");
-        let regexes = RULES
+        Self::from_rules(rules::builtin(), Vec::new()).expect("built-in rules compile")
+    }
+
+    /// Built-in rules minus the ones the config disables, plus its custom
+    /// rules and allowlist.
+    pub fn with_config(config: &Config) -> Result<Self> {
+        let mut all = rules::builtin();
+        for id in &config.disabled_rules {
+            if !all.iter().any(|r| &r.id == id) {
+                bail!("allowlist.rules names {id:?}, which is not a built-in rule");
+            }
+        }
+        all.retain(|r| !config.disabled_rules.contains(&r.id));
+        for rule in &config.custom_rules {
+            if all.iter().any(|r| r.id == rule.id) {
+                bail!("rule id {:?} is already in use", rule.id);
+            }
+            all.push(rule.clone());
+        }
+        let allow = config
+            .allow_regexes
             .iter()
-            .map(|r| {
-                RegexBuilder::new(r.pattern)
-                    .unicode(false)
-                    .build()
-                    .expect("built-in rules compile")
-            })
-            .collect();
-        Scanner { set, regexes }
+            .map(|p| compile(p).with_context(|| format!("invalid allowlist regex {p:?}")))
+            .collect::<Result<_>>()?;
+        Self::from_rules(all, allow)
+    }
+
+    fn from_rules(rules: Vec<Rule>, allow: Vec<Regex>) -> Result<Self> {
+        let mut regexes = Vec::with_capacity(rules.len());
+        for rule in &rules {
+            let regex = compile(&rule.pattern)
+                .with_context(|| format!("rule {:?} has an invalid regex", rule.id))?;
+            if rule.group >= regex.captures_len() {
+                bail!(
+                    "rule {:?} asks for capture group {} but its regex has {}",
+                    rule.id,
+                    rule.group,
+                    regex.captures_len() - 1
+                );
+            }
+            regexes.push(regex);
+        }
+        let set = RegexSetBuilder::new(rules.iter().map(|r| &r.pattern))
+            .unicode(false)
+            .build()?;
+        Ok(Scanner {
+            set,
+            regexes,
+            rules: rules.into_iter().map(Arc::new).collect(),
+            allow,
+        })
+    }
+
+    pub fn rules(&self) -> &[Arc<Rule>] {
+        &self.rules
     }
 
     pub fn scan(&self, text: &str) -> Vec<Hit> {
@@ -59,7 +111,7 @@ impl Scanner {
         }
 
         struct Raw {
-            rule: &'static Rule,
+            rule: usize,
             start: usize,
             end: usize,
             entropy: f64,
@@ -67,7 +119,7 @@ impl Scanner {
 
         let mut raw = Vec::new();
         for idx in matched.iter() {
-            let rule = &RULES[idx];
+            let rule = &self.rules[idx];
             for caps in self.regexes[idx].captures_iter(text) {
                 let Some(m) = caps.get(rule.group) else {
                     continue;
@@ -79,8 +131,11 @@ impl Scanner {
                 if rule.generic && is_placeholder(&String::from_utf8_lossy(m.as_bytes())) {
                     continue;
                 }
+                if self.allow.iter().any(|a| a.is_match(m.as_bytes())) {
+                    continue;
+                }
                 raw.push(Raw {
-                    rule,
+                    rule: idx,
                     start: m.start(),
                     end: m.end(),
                     entropy,
@@ -95,12 +150,12 @@ impl Scanner {
         // same bytes, or when another generic rule reported the same span.
         let specific: Vec<(usize, usize)> = raw
             .iter()
-            .filter(|r| !r.rule.generic)
+            .filter(|r| !self.rules[r.rule].generic)
             .map(|r| (r.start, r.end))
             .collect();
         let mut seen_generic: Vec<(usize, usize)> = Vec::new();
         raw.retain(|r| {
-            if !r.rule.generic {
+            if !self.rules[r.rule].generic {
                 return true;
             }
             if specific.iter().any(|&(s, e)| r.start < e && s < r.end) {
@@ -125,7 +180,7 @@ impl Scanner {
                 continue;
             }
             hits.push(Hit {
-                rule: r.rule,
+                rule: self.rules[r.rule].clone(),
                 line,
                 column: String::from_utf8_lossy(&text[line_start..r.start])
                     .chars()
@@ -149,8 +204,8 @@ mod tests {
         format!("ghp_{}", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hJ6")
     }
 
-    fn ids(hits: &[Hit]) -> Vec<&'static str> {
-        hits.iter().map(|h| h.rule.id).collect()
+    fn ids(hits: &[Hit]) -> Vec<&str> {
+        hits.iter().map(|h| h.rule.id.as_str()).collect()
     }
 
     #[test]
@@ -243,8 +298,12 @@ mod tests {
     #[test]
     fn every_rule_id_is_unique() {
         let mut seen = std::collections::HashSet::new();
-        for rule in RULES {
-            assert!(seen.insert(rule.id), "duplicate rule id {}", rule.id);
+        for rule in rules::builtin() {
+            assert!(
+                seen.insert(rule.id.clone()),
+                "duplicate rule id {}",
+                rule.id
+            );
         }
     }
 }
