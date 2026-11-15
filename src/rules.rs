@@ -17,7 +17,14 @@ pub struct Rule {
 }
 
 const fn specific(id: &'static str, description: &'static str, pattern: &'static str) -> Rule {
-    Rule { id, description, pattern, group: 0, min_entropy: None, generic: false }
+    Rule {
+        id,
+        description,
+        pattern,
+        group: 0,
+        min_entropy: None,
+        generic: false,
+    }
 }
 
 const fn generic(
@@ -26,7 +33,14 @@ const fn generic(
     pattern: &'static str,
     min_entropy: f64,
 ) -> Rule {
-    Rule { id, description, pattern, group: 1, min_entropy: Some(min_entropy), generic: true }
+    Rule {
+        id,
+        description,
+        pattern,
+        group: 1,
+        min_entropy: Some(min_entropy),
+        generic: true,
+    }
 }
 
 pub const RULES: &[Rule] = &[
@@ -98,11 +112,7 @@ pub const RULES: &[Rule] = &[
         "OpenAI API key",
         r"\bsk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{40,}|[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20})\b",
     ),
-    specific(
-        "npm-token",
-        "npm access token",
-        r"\bnpm_[A-Za-z0-9]{36}\b",
-    ),
+    specific("npm-token", "npm access token", r"\bnpm_[A-Za-z0-9]{36}\b"),
     specific(
         "sendgrid-api-key",
         "SendGrid API key",
@@ -113,11 +123,7 @@ pub const RULES: &[Rule] = &[
         "Telegram bot token",
         r"\b\d{8,10}:AA[A-Za-z0-9_-]{33}\b",
     ),
-    specific(
-        "twilio-api-key",
-        "Twilio API key",
-        r"\bSK[0-9a-f]{32}\b",
-    ),
+    specific("twilio-api-key", "Twilio API key", r"\bSK[0-9a-f]{32}\b"),
     specific(
         "jwt",
         "JSON Web Token",
@@ -151,8 +157,19 @@ pub const RULES: &[Rule] = &[
 /// Values that look like documentation or templating rather than a real secret.
 pub fn is_placeholder(value: &str) -> bool {
     const MARKERS: &[&str] = &[
-        "example", "changeme", "placeholder", "your_", "your-", "xxxx", "dummy", "redacted",
-        "****", "<", "${", "{{", "todo",
+        "example",
+        "changeme",
+        "placeholder",
+        "your_",
+        "your-",
+        "xxxx",
+        "dummy",
+        "redacted",
+        "****",
+        "<",
+        "${",
+        "{{",
+        "todo",
     ];
     let lower = value.to_ascii_lowercase();
     if MARKERS.iter().any(|m| lower.contains(m)) {

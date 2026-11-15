@@ -60,14 +60,18 @@ pub fn scan_tree(
 
     builder.build_parallel().run(|| {
         Box::new(|entry| {
-            let Ok(entry) = entry else { return WalkState::Continue };
+            let Ok(entry) = entry else {
+                return WalkState::Continue;
+            };
             if !entry.file_type().is_some_and(|t| t.is_file()) {
                 return WalkState::Continue;
             }
             if entry.metadata().is_ok_and(|m| m.len() > opts.max_size) {
                 return WalkState::Continue;
             }
-            let Ok(data) = std::fs::read(entry.path()) else { return WalkState::Continue };
+            let Ok(data) = std::fs::read(entry.path()) else {
+                return WalkState::Continue;
+            };
             if looks_binary(&data) {
                 return WalkState::Continue;
             }
@@ -79,14 +83,23 @@ pub fn scan_tree(
                 return WalkState::Continue;
             }
             let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
-            let shown = if rel.as_os_str().is_empty() { entry.path() } else { rel };
+            let shown = if rel.as_os_str().is_empty() {
+                entry.path()
+            } else {
+                rel
+            };
             let path = shown.to_string_lossy();
-            let found = hits.into_iter().map(|h| Finding::from_hit(h, &path, Source::Worktree));
+            let found = hits
+                .into_iter()
+                .map(|h| Finding::from_hit(h, &path, Source::Worktree));
             findings.lock().unwrap().extend(found);
             WalkState::Continue
         })
     });
 
-    let stats = WalkStats { files: files.into_inner(), bytes: bytes.into_inner() };
+    let stats = WalkStats {
+        files: files.into_inner(),
+        bytes: bytes.into_inner(),
+    };
     Ok((findings.into_inner().unwrap(), stats))
 }

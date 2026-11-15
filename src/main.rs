@@ -74,9 +74,14 @@ fn main() -> ExitCode {
 
 fn is_broken_pipe(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
-        let io = cause.downcast_ref::<std::io::Error>().map(|e| e.kind()).or_else(|| {
-            cause.downcast_ref::<serde_json::Error>().and_then(|e| e.io_error_kind())
-        });
+        let io = cause
+            .downcast_ref::<std::io::Error>()
+            .map(|e| e.kind())
+            .or_else(|| {
+                cause
+                    .downcast_ref::<serde_json::Error>()
+                    .and_then(|e| e.io_error_kind())
+            });
         io == Some(std::io::ErrorKind::BrokenPipe)
     })
 }
@@ -102,7 +107,9 @@ fn run(cli: Cli) -> Result<bool> {
         .threads
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
         .max(1);
-    rayon::ThreadPoolBuilder::new().num_threads(threads).build_global()?;
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()?;
 
     let started = Instant::now();
     let scanner = Scanner::new();
@@ -132,7 +139,10 @@ fn run(cli: Cli) -> Result<bool> {
         // in history.
         let mut on_disk: HashMap<(&str, String, String), Vec<usize>> = HashMap::new();
         for (i, f) in findings.iter().enumerate() {
-            on_disk.entry((f.rule, f.path.clone(), f.secret.clone())).or_default().push(i);
+            on_disk
+                .entry((f.rule, f.path.clone(), f.secret.clone()))
+                .or_default()
+                .push(i);
         }
         let mut history_only = Vec::new();
         for f in history {
@@ -176,12 +186,19 @@ fn run(cli: Cli) -> Result<bool> {
 }
 
 fn print_text(out: &mut impl Write, findings: &[Finding], color: bool) -> Result<()> {
-    let (red, bold, dim, reset) =
-        if color { ("\x1b[31m", "\x1b[1m", "\x1b[2m", "\x1b[0m") } else { ("", "", "", "") };
+    let (red, bold, dim, reset) = if color {
+        ("\x1b[31m", "\x1b[1m", "\x1b[2m", "\x1b[0m")
+    } else {
+        ("", "", "", "")
+    };
     for f in findings {
         writeln!(out, "{red}{bold}{}{reset}  {}", f.rule, f.description)?;
         writeln!(out, "  {bold}{}:{}:{}{reset}", f.path, f.line, f.column)?;
-        writeln!(out, "  secret   {}  {dim}(entropy {:.2}){reset}", f.secret, f.entropy)?;
+        writeln!(
+            out,
+            "  secret   {}  {dim}(entropy {:.2}){reset}",
+            f.secret, f.entropy
+        )?;
         if let Some(c) = &f.commit {
             let label = match f.source {
                 Source::Worktree => "added in",

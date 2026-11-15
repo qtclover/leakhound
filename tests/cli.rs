@@ -16,12 +16,21 @@ fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["-c", "user.name=Test", "-c", "user.email=test@example.invalid"])
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+        ])
         .args(["-c", "commit.gpgsign=false"])
         .args(args)
         .output()
         .expect("git runs");
-    assert!(status.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&status.stderr));
+    assert!(
+        status.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
 }
 
 fn json(output: &Output) -> serde_json::Value {
@@ -45,7 +54,11 @@ fn clean_directory_exits_zero() {
 #[test]
 fn secret_on_disk_exits_one_and_is_redacted() {
     let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("config.py"), format!("a = 1\nTOKEN = '{}'\n", token())).unwrap();
+    fs::write(
+        dir.path().join("config.py"),
+        format!("a = 1\nTOKEN = '{}'\n", token()),
+    )
+    .unwrap();
 
     let out = leakhound(dir.path(), &["--format", "json"]);
     assert_eq!(out.status.code(), Some(1));
@@ -67,7 +80,12 @@ fn exclude_glob_skips_files() {
     fs::create_dir(dir.path().join("fixtures")).unwrap();
     fs::write(dir.path().join("fixtures/creds.txt"), token()).unwrap();
     assert_eq!(leakhound(dir.path(), &[]).status.code(), Some(1));
-    assert_eq!(leakhound(dir.path(), &["--exclude", "fixtures/"]).status.code(), Some(0));
+    assert_eq!(
+        leakhound(dir.path(), &["--exclude", "fixtures/"])
+            .status
+            .code(),
+        Some(0)
+    );
 }
 
 #[test]
@@ -75,9 +93,16 @@ fn gitignored_files_are_skipped_unless_asked() {
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-q"]);
     fs::write(dir.path().join(".gitignore"), ".env\n").unwrap();
-    fs::write(dir.path().join(".env"), format!("GITHUB_TOKEN={}\n", token())).unwrap();
+    fs::write(
+        dir.path().join(".env"),
+        format!("GITHUB_TOKEN={}\n", token()),
+    )
+    .unwrap();
     assert_eq!(leakhound(dir.path(), &[]).status.code(), Some(0));
-    assert_eq!(leakhound(dir.path(), &["--no-ignore"]).status.code(), Some(1));
+    assert_eq!(
+        leakhound(dir.path(), &["--no-ignore"]).status.code(),
+        Some(1)
+    );
 }
 
 #[test]
@@ -86,7 +111,11 @@ fn deleted_secret_is_still_found_in_history() {
     let file = dir.path().join("deploy.sh");
     git(dir.path(), &["init", "-q"]);
 
-    fs::write(&file, format!("#!/bin/sh\necho start\nexport GH={}\n", token())).unwrap();
+    fs::write(
+        &file,
+        format!("#!/bin/sh\necho start\nexport GH={}\n", token()),
+    )
+    .unwrap();
     git(dir.path(), &["add", "."]);
     git(dir.path(), &["commit", "-qm", "add deploy script"]);
 

@@ -41,7 +41,12 @@ impl Scanner {
             .expect("built-in rules compile");
         let regexes = RULES
             .iter()
-            .map(|r| RegexBuilder::new(r.pattern).unicode(false).build().expect("built-in rules compile"))
+            .map(|r| {
+                RegexBuilder::new(r.pattern)
+                    .unicode(false)
+                    .build()
+                    .expect("built-in rules compile")
+            })
             .collect();
         Scanner { set, regexes }
     }
@@ -64,7 +69,9 @@ impl Scanner {
         for idx in matched.iter() {
             let rule = &RULES[idx];
             for caps in self.regexes[idx].captures_iter(text) {
-                let Some(m) = caps.get(rule.group) else { continue };
+                let Some(m) = caps.get(rule.group) else {
+                    continue;
+                };
                 let entropy = shannon(m.as_bytes());
                 if rule.min_entropy.is_some_and(|min| entropy < min) {
                     continue;
@@ -72,7 +79,12 @@ impl Scanner {
                 if rule.generic && is_placeholder(&String::from_utf8_lossy(m.as_bytes())) {
                     continue;
                 }
-                raw.push(Raw { rule, start: m.start(), end: m.end(), entropy });
+                raw.push(Raw {
+                    rule,
+                    start: m.start(),
+                    end: m.end(),
+                    entropy,
+                });
             }
         }
         if raw.is_empty() {
@@ -81,8 +93,11 @@ impl Scanner {
 
         // A generic rule adds nothing when a specific rule already claimed the
         // same bytes, or when another generic rule reported the same span.
-        let specific: Vec<(usize, usize)> =
-            raw.iter().filter(|r| !r.rule.generic).map(|r| (r.start, r.end)).collect();
+        let specific: Vec<(usize, usize)> = raw
+            .iter()
+            .filter(|r| !r.rule.generic)
+            .map(|r| (r.start, r.end))
+            .collect();
         let mut seen_generic: Vec<(usize, usize)> = Vec::new();
         raw.retain(|r| {
             if !r.rule.generic {
@@ -105,13 +120,17 @@ impl Scanner {
             let line = newlines.partition_point(|&nl| nl < r.start) + 1;
             let line_start = if line == 1 { 0 } else { newlines[line - 2] + 1 };
             let line_end = newlines.get(line - 1).copied().unwrap_or(text.len());
-            if memchr::memmem::find(&text[line_start..line_end], ALLOW_MARKER.as_bytes()).is_some() {
+            if memchr::memmem::find(&text[line_start..line_end], ALLOW_MARKER.as_bytes()).is_some()
+            {
                 continue;
             }
             hits.push(Hit {
                 rule: r.rule,
                 line,
-                column: String::from_utf8_lossy(&text[line_start..r.start]).chars().count() + 1,
+                column: String::from_utf8_lossy(&text[line_start..r.start])
+                    .chars()
+                    .count()
+                    + 1,
                 secret: String::from_utf8_lossy(&text[r.start..r.end]).into_owned(),
                 entropy: r.entropy,
             });
@@ -137,7 +156,10 @@ mod tests {
     #[test]
     fn clean_text_has_no_hits() {
         let s = Scanner::new();
-        assert!(s.scan("fn main() {\n    println!(\"hello\");\n}\n").is_empty());
+        assert!(
+            s.scan("fn main() {\n    println!(\"hello\");\n}\n")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -184,7 +206,10 @@ mod tests {
     #[test]
     fn generic_assignment_skips_placeholders() {
         let s = Scanner::new();
-        assert!(s.scan("api_key = \"your_api_key_goes_here_123\"").is_empty());
+        assert!(
+            s.scan("api_key = \"your_api_key_goes_here_123\"")
+                .is_empty()
+        );
         assert!(s.scan("secret: \"${SECRET_FROM_VAULT_9x}\"").is_empty());
     }
 
@@ -202,7 +227,10 @@ mod tests {
         let hits = s.scan("url = postgres://app:x9Kq2mVz7Lp@db.internal:5432/prod"); // leakhound:allow
         assert_eq!(ids(&hits), ["database-url-password"]);
         assert_eq!(hits[0].secret, "x9Kq2mVz7Lp");
-        assert!(s.scan("postgres://postgres:postgres@localhost/dev").is_empty());
+        assert!(
+            s.scan("postgres://postgres:postgres@localhost/dev")
+                .is_empty()
+        );
     }
 
     #[test]

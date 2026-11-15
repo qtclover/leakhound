@@ -33,7 +33,10 @@ pub struct HistoryStats {
 /// Pull the new-file start line out of `@@ -a,b +c,d @@`.
 fn hunk_start(header: &str) -> Option<usize> {
     let plus = header.find(" +")? + 2;
-    let digits: String = header[plus..].chars().take_while(char::is_ascii_digit).collect();
+    let digits: String = header[plus..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
     digits.parse().ok()
 }
 
