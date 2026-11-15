@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use leakhound::config::Config;
 use leakhound::filter::PathFilter;
@@ -63,6 +63,10 @@ struct ScanArgs {
     /// Output format
     #[arg(long, short, value_enum, default_value_t = Format::Text)]
     format: Format,
+
+    /// Write the report to a file instead of standard output
+    #[arg(long, short, value_name = "FILE")]
+    output: Option<PathBuf>,
 
     /// Ask the issuing service whether each secret still works (makes network requests)
     #[arg(long)]
@@ -237,9 +241,16 @@ fn run(cli: ScanArgs) -> Result<bool> {
         }
     }
 
-    let mut out = std::io::stdout().lock();
+    let color = cli.output.is_none() && std::io::stdout().is_terminal();
+    let mut out: Box<dyn Write> = match &cli.output {
+        Some(file) => Box::new(std::io::BufWriter::new(
+            std::fs::File::create(file)
+                .with_context(|| format!("could not write {}", file.display()))?,
+        )),
+        None => Box::new(std::io::stdout().lock()),
+    };
     match cli.format {
-        Format::Text => report::text(&mut out, &findings, std::io::stdout().is_terminal())?,
+        Format::Text => report::text(&mut out, &findings, color)?,
         Format::Json => {
             report::json(&mut out, &findings)?;
             writeln!(out)?;
@@ -249,6 +260,9 @@ fn run(cli: ScanArgs) -> Result<bool> {
             writeln!(out)?;
         }
     }
+
+    out.flush()?;
+    drop(out);
 
     eprintln!(
         "{summary} in {:.2}s, {} finding{}",

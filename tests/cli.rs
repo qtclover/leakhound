@@ -362,3 +362,19 @@ fn install_hook_outside_a_repository_exits_two() {
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn output_flag_writes_the_report_to_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.txt"), token()).unwrap();
+    let report = dir.path().join("report.sarif");
+
+    let out = leakhound(
+        dir.path(),
+        &["--format", "sarif", "--output", report.to_str().unwrap()],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    let sarif: serde_json::Value = serde_json::from_slice(&fs::read(&report).unwrap()).unwrap();
+    assert_eq!(sarif["runs"][0]["results"].as_array().unwrap().len(), 1);
+}
