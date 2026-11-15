@@ -4,7 +4,7 @@ use leakhound::config::Config;
 use leakhound::filter::PathFilter;
 use leakhound::scan::Scanner;
 use leakhound::walk::{WalkOptions, scan_tree};
-use leakhound::{git, hook, redact, report};
+use leakhound::{git, hook, redact, report, verify};
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -63,6 +63,10 @@ struct ScanArgs {
     /// Output format
     #[arg(long, short, value_enum, default_value_t = Format::Text)]
     format: Format,
+
+    /// Ask the issuing service whether each secret still works (makes network requests)
+    #[arg(long)]
+    verify: bool,
 
     /// Print secrets in full instead of redacting them
     #[arg(long)]
@@ -223,6 +227,10 @@ fn run(cli: ScanArgs) -> Result<bool> {
     findings.sort_by(|a, b| {
         (&a.path, a.line, a.column, &a.rule).cmp(&(&b.path, b.line, b.column, &b.rule))
     });
+    if cli.verify {
+        let active = verify::verify_findings(&mut findings);
+        summary.push_str(&format!(", {active} verified active"));
+    }
     if !cli.show_secrets {
         for f in &mut findings {
             f.secret = redact(&f.secret);

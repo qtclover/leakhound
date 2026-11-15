@@ -6,6 +6,7 @@ pub mod hook;
 pub mod report;
 pub mod rules;
 pub mod scan;
+pub mod verify;
 pub mod walk;
 
 use serde::Serialize;
@@ -45,6 +46,10 @@ pub struct Finding {
     /// The oldest commit that added this secret, when history was scanned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<Arc<Commit>>,
+    /// Whether the issuing service still accepts the secret, when --verify
+    /// was given and this kind of secret can be checked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification: Option<verify::Status>,
 }
 
 impl Finding {
@@ -60,6 +65,7 @@ impl Finding {
             entropy: hit.entropy,
             source,
             commit: None,
+            verification: None,
         }
     }
 }

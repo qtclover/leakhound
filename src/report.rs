@@ -1,6 +1,7 @@
 //! Output formats: human-readable text, JSON, and SARIF.
 
 use crate::rules::Rule;
+use crate::verify::Status;
 use crate::{Finding, Source};
 use serde_json::{Value, json};
 use std::io::{self, Write};
@@ -27,6 +28,16 @@ pub fn text(out: &mut impl Write, findings: &[Finding], color: bool) -> io::Resu
             };
             let short = &c.hash[..c.hash.len().min(10)];
             writeln!(out, "  {label} {short} {dim}{} {}{reset}", c.date, c.author)?;
+        }
+        match f.verification {
+            Some(Status::Active) => {
+                writeln!(out, "  verified {red}{bold}ACTIVE{reset}, revoke it now")?
+            }
+            Some(Status::Inactive) => writeln!(out, "  verified {dim}inactive{reset}")?,
+            Some(Status::Unknown) => {
+                writeln!(out, "  verified {dim}unknown (no clear answer){reset}")?
+            }
+            None => {}
         }
         writeln!(out)?;
     }
@@ -62,6 +73,13 @@ pub fn sarif(findings: &[Finding], rules: &[Arc<Rule>]) -> Value {
                     ". No longer in the current files, but still in git history (commit {}).",
                     &c.hash[..c.hash.len().min(10)]
                 ));
+            }
+            match f.verification {
+                Some(Status::Active) => {
+                    message.push_str(" Verified ACTIVE: the service still accepts it.")
+                }
+                Some(Status::Inactive) => message.push_str(" Verified inactive."),
+                _ => {}
             }
             json!({
                 "ruleId": f.rule,
