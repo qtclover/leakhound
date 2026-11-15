@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history, so the self-scan below can read it
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -17,3 +19,5 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
       - run: cargo build --release --locked
+      - name: Scan this repository with itself
+        run: ./target/release/leakhound . --history

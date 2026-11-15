@@ -1,0 +1,43 @@
+name: leakhound
+description: Scan a repository and its git history for leaked secrets
+branding:
+  icon: shield
+  color: red
+
+inputs:
+  version:
+    description: Release of leakhound to run
+    default: v0.2.0
+  path:
+    description: Directory to scan
+    default: .
+  args:
+    description: Extra arguments, for example "--history --format sarif"
+    default: --history
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      # Inputs go through the environment rather than being pasted into the
+      # script, so a value containing shell syntax cannot run as code.
+      env:
+        LEAKHOUND_VERSION: ${{ inputs.version }}
+        LEAKHOUND_PATH: ${{ inputs.path }}
+        LEAKHOUND_ARGS: ${{ inputs.args }}
+      run: |
+        set -euo pipefail
+        if [ "$RUNNER_OS" != "Linux" ] || [ "$RUNNER_ARCH" != "X64" ]; then
+          echo "::error::leakhound only publishes a Linux x86_64 binary; use an ubuntu runner"
+          exit 2
+        fi
+        name="leakhound-${LEAKHOUND_VERSION}-x86_64-linux"
+        base="https://github.com/qtclover/leakhound/releases/download/${LEAKHOUND_VERSION}"
+        dir="$RUNNER_TEMP/leakhound"
+        mkdir -p "$dir"
+        curl -fsSL "$base/$name.tar.gz" -o "$dir/$name.tar.gz"
+        curl -fsSL "$base/SHA256SUMS" -o "$dir/SHA256SUMS"
+        (cd "$dir" && grep " $name.tar.gz\$" SHA256SUMS | sha256sum -c -)
+        tar -xzf "$dir/$name.tar.gz" -C "$dir"
+        # shellcheck disable=SC2086  # args are meant to split into words
+        "$dir/$name/leakhound" "$LEAKHOUND_PATH" $LEAKHOUND_ARGS
